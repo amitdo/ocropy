@@ -35,7 +35,6 @@ from pylab import (clf, cm, figure, ginput, imshow, newaxis, rand, subplot,
 from collections import defaultdict
 from ocrolib.exceptions import RecognitionError
 from ocrolib.edist import levenshtein
-import nutils
 import unicodedata
 from scipy.ndimage import measurements,filters
 
@@ -471,13 +470,15 @@ def backward_py(n,N,ni,ns,na,deltas,
             sourceerr[t] += dot(gferr[t],WGF)
         sourceerr[t] += dot(goerr[t],WGO)
         sourceerr[t] += dot(cierr[t],WCI)
-    DWIP = nutils.sumprod(gierr[1:n],state[:n-1],out=DWIP)
-    DWFP = nutils.sumprod(gferr[1:n],state[:n-1],out=DWFP)
-    DWOP = nutils.sumprod(goerr[:n],state[:n],out=DWOP)
-    DWGI = nutils.sumouter(gierr[:n],source[:n],out=DWGI)
-    DWGF = nutils.sumouter(gferr[1:n],source[1:n],out=DWGF)
-    DWGO = nutils.sumouter(goerr[:n],source[:n],out=DWGO)
-    DWCI = nutils.sumouter(cierr[:n],source[:n],out=DWCI)
+    DWIP = np.einsum('ji,ji->
+i', gierr[1:n], state[:n-1])
+    DWFP = np.einsum('ji,ji->
+i', gferr[1:n], state[:n-1])
+    DWOP = np.einsum('ji,ji->i', goerr[:n], state[:n])
+    DWGI = gierr[:n].T.dot(source[:n])
+    DWGF = gferr[1:n].T.dot(source[1:n])
+    DWGO = goerr[:n].T.dot(source[:n])
+    DWCI = cierr[:n].T.dot(source[:n])
 
 class LSTM(Network):
     """A standard LSTM network. This is a direct implementation of all the forward
