@@ -411,44 +411,33 @@ def hprime(x,y=None):
 # However, that is several times slower and the extra abstraction
 # isn't actually all that useful.
 
-def forward_py(n,N,ni,ns,na,xs,source,gix,gfx,gox,cix,gi,gf,go,ci,state,output,WGI,WGF,WGO,WCI,WIP,WFP,WOP):
+def forward_py(n,N,ni,ns,na,xs,source,gi,gf,go,ci,state,output,WGI,WGF,WGO,WCI):
     """Perform forward propagation of activations for a simple LSTM layer."""
     for t in range(n):
         prev = zeros(ns) if t==0 else output[t-1]
         source[t,0] = 1
         source[t,1:1+ni] = xs[t]
         source[t,1+ni:] = prev
-        dot(WGI,source[t],out=gix[t])
-        dot(WGF,source[t],out=gfx[t])
-        dot(WGO,source[t],out=gox[t])
-        dot(WCI,source[t],out=cix[t])
-        if t>0:
-            gix[t] += WIP*state[t-1]
-            gfx[t] += WFP*state[t-1]
-        gi[t] = ffunc(gix[t])
-        gf[t] = ffunc(gfx[t])
-        ci[t] = gfunc(cix[t])
+        gi[t] = ffunc(dot(WGI,source[t],out=gi[t]))
+        gf[t] = ffunc(dot(WGF,source[t],out=gf[t]))
+        go[t] = ffunc(dot(WGO,source[t],out=go[t]))
+        ci[t] = gfunc(dot(WCI,source[t],out=ci[t]))
         state[t] = ci[t]*gi[t]
         if t>0:
             state[t] += gf[t]*state[t-1]
-            gox[t] += WOP*state[t]
-        go[t] = ffunc(gox[t])
         output[t] = hfunc(state[t]) * go[t]
     assert not isnan(output[:n]).any()
 
 
 def backward_py(n,N,ni,ns,na,deltas,
                     source,
-                    gix,gfx,gox,cix,
                     gi,gf,go,ci,
                     state,output,
                     WGI,WGF,WGO,WCI,
-                    WIP,WFP,WOP,
                     sourceerr,
                     gierr,gferr,goerr,cierr,
                     stateerr,outerr,
-                    DWGI,DWGF,DWGO,DWCI,
-                    DWIP,DWFP,DWOP):
+                    DWGI,DWGF,DWGO,DWCI):
     """Perform backward propagation of deltas for a simple LSTM layer."""
     for t in reversed(range(n)):
         outerr[t] = deltas[t]
@@ -456,10 +445,7 @@ def backward_py(n,N,ni,ns,na,deltas,
             outerr[t] += sourceerr[t+1][-ns:]
         goerr[t] = fprime(None,go[t]) * hfunc(state[t]) * outerr[t]
         stateerr[t] = hprime(state[t]) * go[t] * outerr[t]
-        stateerr[t] += goerr[t]*WOP
         if t<n-1:
-            stateerr[t] += gferr[t+1]*WFP
-            stateerr[t] += gierr[t+1]*WIP
             stateerr[t] += stateerr[t+1]*gf[t+1]
         if t>0:
             gferr[t] = fprime(None,gf[t])*stateerr[t]*state[t-1]
@@ -470,11 +456,6 @@ def backward_py(n,N,ni,ns,na,deltas,
             sourceerr[t] += dot(gferr[t],WGF)
         sourceerr[t] += dot(goerr[t],WGO)
         sourceerr[t] += dot(cierr[t],WCI)
-    DWIP = np.einsum('ji,ji->
-i', gierr[1:n], state[:n-1])
-    DWFP = np.einsum('ji,ji->
-i', gferr[1:n], state[:n-1])
-    DWOP = np.einsum('ji,ji->i', goerr[:n], state[:n])
     DWGI = gierr[:n].T.dot(source[:n])
     DWGF = gferr[1:n].T.dot(source[1:n])
     DWGO = goerr[:n].T.dot(source[:n])
@@ -505,18 +486,14 @@ class LSTM(Network):
         for w in "WGI WGF WGO WCI".split():
             setattr(self,w,randu(ns,na)*initial)
             setattr(self,"D"+w,zeros((ns,na)))
-        # peep weights
-        for w in "WIP WFP WOP".split():
-            setattr(self,w,randu(ns)*initial)
-            setattr(self,"D"+w,zeros(ns))
     def weights(self):
         "Yields all the weight and derivative matrices"
-        weights = "WGI WGF WGO WCI WIP WFP WOP"
+        weights = "WGI WGF WGO WCI"
         for w in weights.split():
             yield(getattr(self,w),getattr(self,"D"+w),w)
     def info(self):
         "Print info about the internal state"
-        vars = "WGI WGF WGO WIP WFP WOP cix ci gix gi gox go gfx gf"
+        vars = "WGI WGF WGO ci gi go gf"
         vars += " source state output gierr gferr goerr cierr stateerr"
         vars = vars.split()
         vars = sorted(vars)
@@ -532,7 +509,7 @@ class LSTM(Network):
         """Allocate space for the internal state variables.
         `n` is the maximum sequence length that can be processed."""
         ni,ns,na = self.dims
-        vars = "cix ci gix gi gox go gfx gf"
+        vars = "ci gi go gf"
         vars += " state output gierr gferr goerr cierr stateerr outerr"
         for v in vars.split():
             setattr(self,v,nan*ones((n,ns)))
@@ -540,7 +517,7 @@ class LSTM(Network):
         self.sourceerr = nan*ones((n,na))
     def reset(self,n):
         """Reset the contents of the internal state variables to `nan`"""
-        vars = "cix ci gix gi gox go gfx gf"
+        vars = "ci gi go gf"
         vars += " state output gierr gferr goerr cierr stateerr outerr"
         vars += " source sourceerr"
         for v in vars.split():
@@ -561,11 +538,9 @@ class LSTM(Network):
         self.reset(n)
         forward_py(n,N,ni,ns,na,xs,
                    self.source,
-                   self.gix,self.gfx,self.gox,self.cix,
-                   self.gi,self.gf,self.go,self.ci,
+                                      self.gi,self.gf,self.go,self.ci,
                    self.state,self.output,
-                   self.WGI,self.WGF,self.WGO,self.WCI,
-                   self.WIP,self.WFP,self.WOP)
+                   self.WGI,self.WGF,self.WGO,self.WCI)
         assert not isnan(self.output[:n]).any()
         return self.output[:n]
     def backward(self,deltas):
@@ -579,16 +554,13 @@ class LSTM(Network):
         if n>N: raise ocrolib.RecognitionError("input too large for LSTM model")
         backward_py(n,N,ni,ns,na,deltas,
                     self.source,
-                    self.gix,self.gfx,self.gox,self.cix,
-                    self.gi,self.gf,self.go,self.ci,
+                                        self.gi,self.gf,self.go,self.ci,
                     self.state,self.output,
                     self.WGI,self.WGF,self.WGO,self.WCI,
-                    self.WIP,self.WFP,self.WOP,
-                    self.sourceerr,
+                                        self.sourceerr,
                     self.gierr,self.gferr,self.goerr,self.cierr,
                     self.stateerr,self.outerr,
-                    self.DWGI,self.DWGF,self.DWGO,self.DWCI,
-                    self.DWIP,self.DWFP,self.DWOP)
+                    self.DWGI,self.DWGF,self.DWGO,self.DWCI)
         return [s[1:1+ni] for s in self.sourceerr[:n]]
 
 ################################################################
